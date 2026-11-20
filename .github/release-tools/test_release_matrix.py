@@ -80,11 +80,16 @@ class ReleaseMatrixTest(unittest.TestCase):
                 self.assertFalse(data['dockers'])
                 self.assertEqual(data['release']['header'], original['release']['header'])
                 self.assertEqual(data['release']['footer'], original['release']['footer'])
-                if simple:
-                    self.assertTrue(data['checksum']['disable'])
-                    self.assertTrue(data['release']['skip_upload'])
-                else:
-                    self.assertEqual(data['checksum']['extra_files'], data['release']['extra_files'])
+                expected_files = [{'glob': 'release-input/sub2api_*.tar.gz'}]
+                if not simple:
+                    expected_files.append({'glob': 'release-input/sub2api_*.zip'})
+                self.assertFalse(data['release']['skip_upload'])
+                self.assertEqual(data['release']['extra_files'], expected_files)
+                self.assertEqual(data['checksum'], {
+                    'name_template': 'checksums.txt',
+                    'algorithm': 'sha256',
+                    'extra_files': expected_files,
+                })
 
     def test_collect_and_verify_hash_and_source_binding(self):
         args = self.fixture_artifacts()

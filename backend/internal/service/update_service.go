@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -28,13 +29,10 @@ var (
 )
 
 const (
-	updateCacheKey = "update_check_cache"
-	updateCacheTTL = 1200 // 20 minutes
-	githubRepo     = "Wei-Shaw/sub2api"
+	// UpdateReleaseRepository publishes the PayFM builds.
+	UpdateReleaseRepository = "leavingnow/sub2api"
 
-	// Security: allowed download domains for updates
-	allowedDownloadHost = "github.com"
-	allowedAssetHost    = "objects.githubusercontent.com"
+	updateCacheTTL = 1200 // 20 minutes
 
 	// Security: max download size (500MB)
 	maxDownloadSize = 500 * 1024 * 1024
@@ -197,7 +195,7 @@ func (s *UpdateService) applyReleaseAssets(ctx context.Context, releaseAssets []
 		return fmt.Errorf("no compatible release found for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
 
-	// SECURITY: Validate download URL is from trusted domain
+	// GitHub's release metadata supplies a browser URL in this repository.
 	if err := validateDownloadURL(downloadURL); err != nil {
 		return fmt.Errorf("invalid download URL: %w", err)
 	}
@@ -363,7 +361,7 @@ func (s *UpdateService) RollbackToVersion(ctx context.Context, version string) e
 // fetchRollbackCandidates fetches recent releases and keeps the newest
 // maxRollbackVersions entries strictly older than the current version.
 func (s *UpdateService) fetchRollbackCandidates(ctx context.Context) ([]*GitHubRelease, error) {
-	releases, err := s.githubClient.FetchRecentReleases(ctx, githubRepo, rollbackFetchPageSize)
+	releases, err := s.githubClient.FetchRecentReleases(ctx, UpdateReleaseRepository, rollbackFetchPageSize)
 	if err != nil {
 		return nil, err
 	}
@@ -400,7 +398,7 @@ func (s *UpdateService) fetchRollbackCandidates(ctx context.Context) ([]*GitHubR
 }
 
 func (s *UpdateService) fetchLatestRelease(ctx context.Context) (*UpdateInfo, error) {
-	release, err := s.githubClient.FetchLatestRelease(ctx, githubRepo)
+	release, err := s.githubClient.FetchLatestRelease(ctx, UpdateReleaseRepository)
 	if err != nil {
 		return nil, err
 	}
@@ -442,27 +440,20 @@ func (s *UpdateService) getArchiveName() string {
 	return fmt.Sprintf("%s_%s", osName, arch)
 }
 
-// validateDownloadURL checks if the URL is from an allowed domain
-// SECURITY: This prevents SSRF and ensures downloads only come from trusted GitHub domains
+// validateDownloadURL checks the initial asset URL before GitHub redirects it to its CDN.
 func validateDownloadURL(rawURL string) error {
 	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("invalid URL: %w", err)
 	}
 
-	// Must be HTTPS
-	if parsedURL.Scheme != "https" {
-		return fmt.Errorf("only HTTPS URLs are allowed")
+	if parsedURL.Scheme != "https" || !strings.EqualFold(parsedURL.Host, "github.com") || parsedURL.User != nil {
+		return fmt.Errorf("expected a GitHub HTTPS release asset URL")
 	}
 
-	// Check against allowed hosts
-	host := parsedURL.Host
-	// GitHub release URLs can be from github.com or objects.githubusercontent.com
-	if host != allowedDownloadHost &&
-		!strings.HasSuffix(host, "."+allowedDownloadHost) &&
-		host != allowedAssetHost &&
-		!strings.HasSuffix(host, "."+allowedAssetHost) {
-		return fmt.Errorf("download from untrusted host: %s", host)
+	prefix := "/" + strings.ToLower(UpdateReleaseRepository) + "/releases/download/"
+	if path.Clean(parsedURL.Path) != parsedURL.Path || !strings.HasPrefix(strings.ToLower(parsedURL.EscapedPath()), prefix) {
+		return fmt.Errorf("release asset must belong to %s", UpdateReleaseRepository)
 	}
 
 	return nil

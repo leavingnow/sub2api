@@ -17,13 +17,7 @@ func newConfirmTestEasyPay(t *testing.T, body string, status int) (*EasyPay, *at
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		if err := r.ParseForm(); err != nil {
-			t.Errorf("ParseForm: %v", err)
-		}
-		q := r.URL.Query()
-		if r.URL.Path != "/api.php" || q.Get("act") != "order" || q.Get("pid") != "1001" || q.Get("key") != "pkey-1" || q.Get("out_trade_no") != "sub2_ORDER1" {
-			t.Errorf("unexpected query request: path=%s query=%v", r.URL.Path, q)
-		}
+		assertPayFMQuery(t, r, "1001", "sub2_ORDER1", "pkey-1")
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))
 	}))
@@ -53,77 +47,56 @@ func confirmTestNotification() *payment.PaymentNotification {
 func TestEasyPayConfirmNotification(t *testing.T) {
 	t.Parallel()
 
+	const paid = `{"success":true,"code":200,"data":{"merchantNum":1001,"orderNo":"sub2_ORDER1","amount":"10.00","orderState":4}}`
+
 	tests := []struct {
-		name        string
-		body        string
-		status      int
-		notifyTrade string
-		wantErr     string
-		wantTradeNo string
+		name    string
+		body    string
+		status  int
+		wantErr string
 	}{
 		{
-			name:        "paid with matching amount and trade_no",
-			body:        `{"code":1,"pid":1001,"out_trade_no":"sub2_ORDER1","trade_no":"2026101600001","money":"10.00","status":1}`,
-			notifyTrade: "2026101600001",
-			wantTradeNo: "2026101600001",
+			name: "paid with matching amount and order",
+			body: paid,
 		},
 		{
-			name:        "missing notify trade_no is filled from upstream",
-			body:        `{"code":1,"trade_no":"2026101600001","money":"10.00","trade_status":"TRADE_SUCCESS"}`,
-			wantTradeNo: "2026101600001",
+			name:    "upstream not paid",
+			body:    strings.Replace(paid, `"orderState":4`, `"orderState":2`, 1),
+			wantErr: "not paid",
 		},
 		{
-			name:        "upstream not paid",
-			body:        `{"code":1,"trade_no":"2026101600001","money":"10.00","status":0}`,
-			notifyTrade: "2026101600001",
-			wantErr:     "not paid",
+			name:    "vendor failure",
+			body:    `{"success":false,"code":400,"msg":"订单号不存在"}`,
+			wantErr: "订单号不存在",
 		},
 		{
-			name:        "upstream failure code with paid status",
-			body:        `{"code":-1,"msg":"订单号不存在","status":1,"money":"10.00"}`,
-			notifyTrade: "2026101600001",
-			wantErr:     "订单号不存在",
+			name:    "amount mismatch",
+			body:    strings.Replace(paid, "10.00", "0.01", 1),
+			wantErr: "amount mismatch",
 		},
 		{
-			name:        "amount mismatch",
-			body:        `{"code":1,"trade_no":"2026101600001","money":"0.01","status":1}`,
-			notifyTrade: "2026101600001",
-			wantErr:     "amount mismatch",
+			name:    "missing upstream amount",
+			body:    strings.Replace(paid, `"amount":"10.00",`, "", 1),
+			wantErr: "invalid amount",
 		},
 		{
-			name:        "missing upstream amount",
-			body:        `{"code":1,"trade_no":"2026101600001","status":1}`,
-			notifyTrade: "2026101600001",
-			wantErr:     "amount mismatch",
+			name:    "different merchant",
+			body:    strings.Replace(paid, "1001", "1002", 1),
+			wantErr: "merchant mismatch",
 		},
 		{
-			name:        "trade_no conflict",
-			body:        `{"code":1,"trade_no":"2026101699999","money":"10.00","status":1}`,
-			notifyTrade: "2026101600001",
-			wantErr:     "trade_no mismatch",
+			name:    "different order",
+			body:    strings.Replace(paid, "sub2_ORDER1", "sub2_ORDER2", 1),
+			wantErr: "order number mismatch",
 		},
 		{
-			name:        "string status from PHP deployment",
-			body:        `{"code":"1","pid":"1001","out_trade_no":"sub2_ORDER1","trade_no":"2026101600001","money":"10.00","status":"1"}`,
-			notifyTrade: "2026101600001",
-			wantTradeNo: "2026101600001",
-		},
-		{
-			name:        "foreign order echo",
-			body:        `{"code":1,"out_trade_no":"sub2_OTHER","trade_no":"2026101600001","money":"10.00","status":1}`,
-			notifyTrade: "2026101600001",
-			wantErr:     "out_trade_no mismatch",
-		},
-		{
-			name:        "upstream HTTP error body",
-			body:        `<html>502 Bad Gateway</html>`,
-			status:      http.StatusBadGateway,
-			notifyTrade: "2026101600001",
-			wantErr:     "parse query",
+			name:    "upstream HTTP error",
+			body:    "<html>502 Bad Gateway</html>",
+			status:  http.StatusBadGateway,
+			wantErr: "HTTP 502",
 		},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			status := tt.status
@@ -132,7 +105,7 @@ func TestEasyPayConfirmNotification(t *testing.T) {
 			}
 			provider, calls := newConfirmTestEasyPay(t, tt.body, status)
 			n := confirmTestNotification()
-			n.TradeNo = tt.notifyTrade
+			originalTradeNo := n.TradeNo
 			err := provider.ConfirmNotification(context.Background(), n)
 			if calls.Load() != 1 {
 				t.Fatalf("upstream query calls = %d, want 1", calls.Load())
@@ -144,12 +117,40 @@ func TestEasyPayConfirmNotification(t *testing.T) {
 				return
 			}
 			if err != nil {
-				t.Fatalf("ConfirmNotification returned error: %v", err)
+				t.Fatalf("ConfirmNotification: %v", err)
 			}
-			if n.TradeNo != tt.wantTradeNo {
-				t.Fatalf("trade_no = %q, want %q", n.TradeNo, tt.wantTradeNo)
+			if n.TradeNo != originalTradeNo {
+				t.Fatalf("callback trade number changed to %q", n.TradeNo)
 			}
 		})
+	}
+}
+
+func TestEasyPayVerifyPayFMNotification(t *testing.T) {
+	t.Parallel()
+
+	provider := newTestEasyPay(t, "https://example.com")
+	params := map[string]string{
+		"pid":              "pid-1",
+		"trade_no":         "gateway-123",
+		"out_trade_no":     "order-123",
+		"type":             "alipay",
+		"name":             "balance recharge",
+		"money":            "12.34",
+		"trade_status":     tradeStatusSuccess,
+		"channel_order_no": "channel-123",
+	}
+	params["sign"] = easyPaySign(params, "pkey-1")
+	query := url.Values{}
+	for key, value := range params {
+		query.Set(key, value)
+	}
+	notification, err := provider.VerifyNotification(context.Background(), query.Encode(), nil)
+	if err != nil {
+		t.Fatalf("VerifyNotification: %v", err)
+	}
+	if notification.OrderID != "order-123" || notification.TradeNo != "gateway-123" || notification.Amount != 12.34 {
+		t.Fatalf("unexpected notification: %+v", notification)
 	}
 }
 
@@ -178,10 +179,10 @@ func TestEasyPayConfirmNotificationQueryTransportError(t *testing.T) {
 	if err == nil {
 		t.Fatal("ConfirmNotification must fail when the upstream is unreachable")
 	}
-	// The query URL carries the merchant key; errors are logged and stored in
+	// The query URL carries a request signature. Errors are stored in
 	// the payment audit trail, so they must not echo the URL.
-	if strings.Contains(err.Error(), "pkey-1") || strings.Contains(err.Error(), "key=") {
-		t.Fatalf("error contains the merchant key: %v", err)
+	if strings.Contains(err.Error(), "pkey-1") || strings.Contains(err.Error(), "sign=") {
+		t.Fatalf("error contains the query credentials: %v", err)
 	}
 }
 

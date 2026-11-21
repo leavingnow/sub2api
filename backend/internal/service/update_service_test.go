@@ -60,6 +60,17 @@ func (s *updateServiceGitHubClientStub) FetchChecksumFile(context.Context, strin
 	panic("FetchChecksumFile should not be called when no update is available")
 }
 
+func TestUpdateServiceRecognizesFourComponentVersion(t *testing.T) {
+	client := &updateServiceGitHubClientStub{release: &GitHubRelease{TagName: "v0.2.24.5"}}
+	svc := NewUpdateService(&updateServiceCacheStub{}, client, "0.2.24", "release")
+	info, err := svc.CheckUpdate(context.Background(), true)
+	require.NoError(t, err)
+	require.Equal(t, "0.2.24.5", info.LatestVersion)
+	require.True(t, info.HasUpdate)
+	require.Positive(t, compareVersions("0.2.24.10", "0.2.24.5"))
+	require.Negative(t, compareVersions("0.2.24.5", "0.2.25"))
+}
+
 func TestUpdateServiceUsesPayFMReleaseChannel(t *testing.T) {
 	ctx := context.Background()
 	archiveName := "sub2api_0.2.24_" + runtime.GOOS + "_" + runtime.GOARCH + ".tar.gz"

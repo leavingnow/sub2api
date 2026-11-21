@@ -136,6 +136,16 @@ class ReleaseMatrixTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'does not match'):
                 release.plan(args)
 
+    def test_plan_accepts_a_four_component_release_tag(self):
+        args = argparse.Namespace(ref='v0.2.24.5', dry_run=False, simple=False)
+        sha = 'a' * 40 + '\n'
+        with patch.dict(os.environ, {'GITHUB_OUTPUT': 'outputs'}), patch.object(subprocess, 'check_output', return_value=sha):
+            release.plan(args)
+        self.assertEqual(release.VERSION_FILE.read_text(), '0.2.24.5\n')
+        self.assertIn('tag=v0.2.24.5\n', Path('outputs').read_text())
+        archive = release.archive_name('0.2.24.5', {'goos': 'linux', 'goarch': 'amd64'})
+        self.assertEqual(archive, 'sub2api_0.2.24.5_linux_amd64.tar.gz')
+
     def test_dry_run_plan_resolves_matrix_without_a_new_tag(self):
         with patch.dict(os.environ, {'GITHUB_OUTPUT': 'outputs', 'GITHUB_REPOSITORY_OWNER': 'ExampleOwner'}), patch.object(subprocess, 'check_output', return_value='a' * 40 + '\n'):
             release.plan(argparse.Namespace(ref='feature/matrix', dry_run=True, simple=False))

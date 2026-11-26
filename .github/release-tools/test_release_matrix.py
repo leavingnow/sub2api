@@ -80,11 +80,16 @@ class ReleaseMatrixTest(unittest.TestCase):
                 self.assertFalse(data['dockers'])
                 self.assertEqual(data['release']['header'], original['release']['header'])
                 self.assertEqual(data['release']['footer'], original['release']['footer'])
-                if simple:
-                    self.assertTrue(data['checksum']['disable'])
-                    self.assertTrue(data['release']['skip_upload'])
-                else:
-                    self.assertEqual(data['checksum']['extra_files'], data['release']['extra_files'])
+                expected_files = [{'glob': 'release-input/sub2api_*.tar.gz'}]
+                if not simple:
+                    expected_files.append({'glob': 'release-input/sub2api_*.zip'})
+                self.assertFalse(data['release']['skip_upload'])
+                self.assertEqual(data['release']['extra_files'], expected_files)
+                self.assertEqual(data['checksum'], {
+                    'name_template': 'checksums.txt',
+                    'algorithm': 'sha256',
+                    'extra_files': expected_files,
+                })
 
     def test_collect_and_verify_hash_and_source_binding(self):
         args = self.fixture_artifacts()
@@ -130,6 +135,16 @@ class ReleaseMatrixTest(unittest.TestCase):
         with patch.object(subprocess, 'check_output', side_effect=['a' * 40 + '\n', 'b' * 40 + '\n']):
             with self.assertRaisesRegex(ValueError, 'does not match'):
                 release.plan(args)
+
+    def test_plan_accepts_a_four_component_release_tag(self):
+        args = argparse.Namespace(ref='v0.2.24.5', dry_run=False, simple=False)
+        sha = 'a' * 40 + '\n'
+        with patch.dict(os.environ, {'GITHUB_OUTPUT': 'outputs'}), patch.object(subprocess, 'check_output', return_value=sha):
+            release.plan(args)
+        self.assertEqual(release.VERSION_FILE.read_text(), '0.2.24.5\n')
+        self.assertIn('tag=v0.2.24.5\n', Path('outputs').read_text())
+        archive = release.archive_name('0.2.24.5', {'goos': 'linux', 'goarch': 'amd64'})
+        self.assertEqual(archive, 'sub2api_0.2.24.5_linux_amd64.tar.gz')
 
     def test_dry_run_plan_resolves_matrix_without_a_new_tag(self):
         with patch.dict(os.environ, {'GITHUB_OUTPUT': 'outputs', 'GITHUB_REPOSITORY_OWNER': 'ExampleOwner'}), patch.object(subprocess, 'check_output', return_value='a' * 40 + '\n'):

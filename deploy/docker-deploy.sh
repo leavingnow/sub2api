@@ -21,8 +21,8 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# GitHub raw content base URL
-GITHUB_RAW_URL="https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy"
+# Deployment files for this release.
+GITHUB_RAW_URL="https://raw.githubusercontent.com/leavingnow/sub2api/v0.2.25/deploy"
 
 # Print colored message
 print_info() {
@@ -87,7 +87,7 @@ main() {
     # Download docker-compose.local.yml and save as docker-compose.yml
     print_info "Downloading docker-compose.yml..."
     if command_exists curl; then
-        curl -sSL "${GITHUB_RAW_URL}/docker-compose.local.yml" -o docker-compose.yml
+        curl -fsSL "${GITHUB_RAW_URL}/docker-compose.local.yml" -o docker-compose.yml
     elif command_exists wget; then
         wget -q "${GITHUB_RAW_URL}/docker-compose.local.yml" -O docker-compose.yml
     else
@@ -99,7 +99,7 @@ main() {
     # Download .env.example
     print_info "Downloading .env.example..."
     if command_exists curl; then
-        curl -sSL "${GITHUB_RAW_URL}/.env.example" -o .env.example
+        curl -fsSL "${GITHUB_RAW_URL}/.env.example" -o .env.example
     else
         wget -q "${GITHUB_RAW_URL}/.env.example" -O .env.example
     fi

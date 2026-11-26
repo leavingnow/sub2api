@@ -17,7 +17,7 @@ import yaml
 FULL_CONFIG = Path('.goreleaser.yaml')
 SIMPLE_CONFIG = Path('.goreleaser.simple.yaml')
 VERSION_FILE = Path('backend/cmd/server/VERSION')
-VERSION_RE = re.compile(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?')
+VERSION_RE = re.compile(r'\d+\.\d+\.\d+(?:\.\d+|-[0-9A-Za-z.-]+)?')
 
 
 def config(simple=False):
@@ -95,12 +95,12 @@ def generate_config(args):
         data['before'] = {'hooks': []}
         data['builds'] = [{'id': 'sub2api', 'skip': True}]
         data['archives'] = []
-        extra = [{'glob': 'release-input/sub2api_*.tar.gz'}, {'glob': 'release-input/sub2api_*.zip'}]
-        if args.simple:
-            data['checksum'] = {'disable': True}
-        else:
-            data['release']['extra_files'] = extra
-            data['checksum'] = {'name_template': 'checksums.txt', 'algorithm': 'sha256', 'extra_files': extra}
+        extra = [{'glob': 'release-input/sub2api_*.tar.gz'}]
+        if not args.simple:
+            extra.append({'glob': 'release-input/sub2api_*.zip'})
+        data['release']['skip_upload'] = False
+        data['release']['extra_files'] = extra
+        data['checksum'] = {'name_template': 'checksums.txt', 'algorithm': 'sha256', 'extra_files': extra}
     Path(args.output).write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True))
 
 

@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"errors"
+	"runtime"
 	"testing"
 	"time"
 
@@ -31,22 +32,82 @@ type updateServiceGitHubClientStub struct {
 	release        *GitHubRelease
 	recentReleases []*GitHubRelease
 	recentErr      error
+	latestRepo     string
+	recentRepo     string
+	downloadURL    string
+	downloadErr    error
 }
 
-func (s *updateServiceGitHubClientStub) FetchLatestRelease(context.Context, string) (*GitHubRelease, error) {
+func (s *updateServiceGitHubClientStub) FetchLatestRelease(_ context.Context, repo string) (*GitHubRelease, error) {
+	s.latestRepo = repo
 	return s.release, nil
 }
 
-func (s *updateServiceGitHubClientStub) FetchRecentReleases(context.Context, string, int) ([]*GitHubRelease, error) {
+func (s *updateServiceGitHubClientStub) FetchRecentReleases(_ context.Context, repo string, _ int) ([]*GitHubRelease, error) {
+	s.recentRepo = repo
 	return s.recentReleases, s.recentErr
 }
 
-func (s *updateServiceGitHubClientStub) DownloadFile(context.Context, string, string, int64) error {
-	panic("DownloadFile should not be called when no update is available")
+func (s *updateServiceGitHubClientStub) DownloadFile(_ context.Context, url, _ string, _ int64) error {
+	if s.downloadErr == nil {
+		panic("unexpected download")
+	}
+	s.downloadURL = url
+	return s.downloadErr
 }
 
 func (s *updateServiceGitHubClientStub) FetchChecksumFile(context.Context, string) ([]byte, error) {
 	panic("FetchChecksumFile should not be called when no update is available")
+}
+
+func TestUpdateServiceRecognizesFourComponentVersion(t *testing.T) {
+	client := &updateServiceGitHubClientStub{release: &GitHubRelease{TagName: "v0.2.24.5"}}
+	svc := NewUpdateService(&updateServiceCacheStub{}, client, "0.2.24", "release")
+	info, err := svc.CheckUpdate(context.Background(), true)
+	require.NoError(t, err)
+	require.Equal(t, "0.2.24.5", info.LatestVersion)
+	require.True(t, info.HasUpdate)
+	require.Positive(t, compareVersions("0.2.24.10", "0.2.24.5"))
+	require.Negative(t, compareVersions("0.2.24.5", "0.2.25"))
+}
+
+func TestUpdateServiceUsesPayFMReleaseChannel(t *testing.T) {
+	ctx := context.Background()
+	archiveName := "sub2api_0.2.24_" + runtime.GOOS + "_" + runtime.GOARCH + ".tar.gz"
+	channelURL := "https://github.com/leavingnow/sub2api/releases/download/v0.2.24/"
+	officialURL := "https://github.com/Wei-Shaw/sub2api/releases/download/v0.2.24/"
+	stopDownload := errors.New("stop test before replacing the executable")
+	client := &updateServiceGitHubClientStub{
+		release: &GitHubRelease{
+			TagName: "v0.2.24",
+			Assets: []GitHubAsset{
+				{Name: archiveName, BrowserDownloadURL: channelURL + archiveName},
+				{Name: "checksums.txt", BrowserDownloadURL: channelURL + "checksums.txt"},
+			},
+		},
+		downloadErr: stopDownload,
+	}
+	svc := NewUpdateService(&updateServiceCacheStub{}, client, "0.2.23", "release")
+
+	info, err := svc.CheckUpdate(ctx, true)
+	require.NoError(t, err)
+	require.True(t, info.HasUpdate)
+	require.Equal(t, "0.2.24", info.LatestVersion)
+	require.Equal(t, "leavingnow/sub2api", client.latestRepo)
+	_, err = svc.ListRollbackVersions(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "leavingnow/sub2api", client.recentRepo)
+
+	require.ErrorIs(t, svc.PerformUpdate(ctx), stopDownload)
+	require.Equal(t, channelURL+archiveName, client.downloadURL)
+
+	client.downloadURL = ""
+	client.release.Assets[1].BrowserDownloadURL = officialURL + "checksums.txt"
+	require.ErrorContains(t, svc.PerformUpdate(ctx), "invalid checksum URL")
+	require.Empty(t, client.downloadURL)
+	client.release.Assets[0].BrowserDownloadURL = officialURL + archiveName
+	require.ErrorContains(t, svc.PerformUpdate(ctx), "invalid download URL")
+	require.Empty(t, client.downloadURL)
 }
 
 func TestUpdateServicePerformUpdateNoUpdateReturnsSentinel(t *testing.T) {

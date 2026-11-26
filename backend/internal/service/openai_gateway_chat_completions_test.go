@@ -742,6 +742,71 @@ func TestForwardAsChatCompletions_UnknownModelWithoutMessagesDispatchKeepsReques
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+func TestForwardAsChatCompletions_ReplaysReasoningSeparatelyWithToolHistory(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{
+		"model":"deepseek-v4-pro",
+		"messages":[
+			{"role":"user","content":"Look up the value."},
+			{"role":"assistant","content":"I will look it up.","reasoning_content":"Use the lookup tool.","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]},
+			{"role":"tool","tool_call_id":"call_1","content":"42"},
+			{"role":"user","content":"What is the value?"}
+		],
+		"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}],
+		"stream":false
+	}`)
+	const stream = `data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","model":"deepseek-v4-pro","output":[{"type":"reasoning","content":[{"type":"reasoning_text","text":"Use the tool result."}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"The value is 42."}]}],"usage":{"input_tokens":12,"output_tokens":8,"total_tokens":20}}}
+
+`
+
+	for _, test := range []struct {
+		name        string
+		baseURL     string
+		field       string
+		partType    string
+		absentField string
+	}{
+		{"compatible Responses", "https://api.example.com", "summary", "summary_text", "content"},
+		{"native DeepSeek Responses", "https://api.deepseek.com", "content", "reasoning_text", "summary"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+			c.Request.Header.Set("Content-Type", "application/json")
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader(stream)),
+			}}
+			svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+			account := &Account{
+				Platform: PlatformOpenAI,
+				Type:     AccountTypeAPIKey,
+				Credentials: map[string]any{
+					"base_url": test.baseURL,
+					"api_key":  "test-key",
+				},
+				Extra: map[string]any{"openai_responses_supported": true},
+			}
+
+			_, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
+			require.NoError(t, err)
+			require.Equal(t, test.baseURL+"/v1/responses", upstream.lastReq.URL.String())
+			require.Equal(t, "reasoning", gjson.GetBytes(upstream.lastBody, "input.1.type").String())
+			require.Equal(t, test.partType, gjson.GetBytes(upstream.lastBody, "input.1."+test.field+".0.type").String())
+			require.Equal(t, "Use the lookup tool.", gjson.GetBytes(upstream.lastBody, "input.1."+test.field+".0.text").String())
+			require.False(t, gjson.GetBytes(upstream.lastBody, "input.1."+test.absentField).Exists())
+			require.Equal(t, "I will look it up.", gjson.GetBytes(upstream.lastBody, "input.2.content.0.text").String())
+			require.Equal(t, "call_1", gjson.GetBytes(upstream.lastBody, "input.3.call_id").String())
+			require.Equal(t, "call_1", gjson.GetBytes(upstream.lastBody, "input.4.call_id").String())
+			require.Equal(t, "42", gjson.GetBytes(upstream.lastBody, "input.4.output").String())
+			require.Equal(t, "The value is 42.", gjson.Get(rec.Body.String(), "choices.0.message.content").String())
+			require.Equal(t, "Use the tool result.", gjson.Get(rec.Body.String(), "choices.0.message.reasoning_content").String())
+		})
+	}
+}
+
 func TestForwardAsChatCompletions_APIKeyPropagatesPromptCacheKeyInResponsesBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
